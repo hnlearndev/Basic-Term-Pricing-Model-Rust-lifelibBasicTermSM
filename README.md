@@ -2,21 +2,16 @@
 
 ## About The Project
 
-The main reference is [Basic term S](https://lifelib.io/libraries/basiclife/BasicTerm_S.html)
+Some notes:
 
-*Note*: Model S, M and SC are basically one.
+- The main reference is [Basic term S](https://lifelib.io/libraries/basiclife/BasicTerm_S.html). Model S, M and SC are basically the same.
+- term_sm.ipynb Jupyter Notebook is only for reference, not an actual implementation. There is a limitation with Rust Kernel in Jupyter lab that lazyframe technology cannot work properly for qquerying.
 
 What can be taken out from this repo?
 
 - The project introduces the implementation of Rust language and its latest dataframe technology to support actuarial work.
-- The project also shows that spreadsheet, although being convinient, is not the best suited tool to handle full projections which might consists of millions records even for the most basic products.
+- The project also shows that spreadsheet, although being convinient, is not the best suited tool to handle full projections which might consist of millions records even for the most basic products.
 
-## Built With
-
-Rust lang:
-
-- [Polars](https://pola.rs/) crate is used to handle calculation.
--
 
 ## Getting started
 
@@ -55,4 +50,4 @@ cargo run
 
 Trung-Hieu Nguyen - [hieunt.hello@gmail.com](mailto:hieunt.hello@gmail.com)
 
-Project Link: [https://github.com/hnlearndev/Universal-Life-Investment-Link-Cashflow-Illustration](https://github.com/hnlearndev/Universal-Life-Investment-Link-Cashflow-Illustration-Rust.git)
+Project Link: [https://github.com/hnlearndev/Basic-Term-Pricing-Model-Rust-lifelibBasicTermSM](https://github.com/hnlearndev/Basic-Term-Pricing-Model-Rust-lifelibBasicTermSM.git)
