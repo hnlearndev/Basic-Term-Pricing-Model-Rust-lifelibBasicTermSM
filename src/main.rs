@@ -1,18 +1,19 @@
 mod assumptions;
-mod mp;
+mod model_points;
 mod projection;
 
 use crate::assumptions::{
     AssumptionSet, get_acq_exp_df, get_inf_rate_df, get_lapse_df, get_load_rate_df, get_mort_df,
     get_mtn_exp_df, get_spot_rate_df,
 };
-use crate::mp::generate_model_points;
-use crate::projection::project_model_points;
+use crate::model_points::generate_model_points;
+use crate::projection::{project_model_points, project_model_points_parallel};
 use std::time::Instant;
 
 use polars::prelude::*;
 
 fn main() -> Result<(), PolarsError> {
+    // Start timer
     let start = Instant::now();
 
     let model_points_df = generate_model_points(10_000, 987654321)?;
@@ -27,10 +28,12 @@ fn main() -> Result<(), PolarsError> {
         load: get_load_rate_df("load_01")?,
     };
 
-    let full_proj = project_model_points(&model_points_df, &assumption_set)?;
+    let full_proj = project_model_points_parallel(&model_points_df, &assumption_set)?;
 
+    // Print the first few rows of the projected DataFrame
     println!("{:#?}", full_proj);
 
+    // Log the elapsed time
     let duration = start.elapsed();
     println!("Elapsed: {:.2?}", duration);
 

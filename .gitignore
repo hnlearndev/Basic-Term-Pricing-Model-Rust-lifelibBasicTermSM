@@ -1,1 +1,34 @@
-/target
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Cargo package files
+Cargo.lock
+
+# By default, Cargo.lock is ignored for libraries, but included for binaries.
+# Uncomment the next line if this is a library crate:
+# Cargo.lock
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Backup files
+*~
+*.bak
+
+# Misc
+node_modules/
+

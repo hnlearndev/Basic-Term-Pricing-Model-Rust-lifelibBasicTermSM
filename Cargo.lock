@@ -10,6 +10,7 @@ dependencies = [
  "ndarray-rand",
  "plotters",
  "polars",
+ "rayon",
 ]
 
 [[package]]

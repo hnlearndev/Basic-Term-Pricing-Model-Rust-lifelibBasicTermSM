@@ -1,9 +1,13 @@
 // These functions should be placed in the same module (eg: projection.rs)
 // NOTE: DO NOT MODIFY THIS
 use crate::assumptions::AssumptionSet;
-use crate::mp::{ModelPoint, convert_model_points_df_to_vector};
+use crate::model_points::{ModelPoint, convert_model_points_df_to_vector};
 use ndarray::prelude::*;
 use polars::prelude::*;
+use rayon::prelude::*;
+
+// Process data in chunks to avoid stack overflow
+const CHUNK_SIZE: usize = 100;
 
 //---------------------------------------------------------------------------------------------------------
 // PRIVATE
@@ -19,7 +23,7 @@ fn _initialize_lf(id: i32, term: i32, entry_age: i32) -> PolarsResult<LazyFrame>
     .with_column((col("t") / lit(12)).alias("duration"))
     .with_column((lit(entry_age) + col("duration")).alias("age"));
 
-    Ok(lf)
+    Ok(lf.collect()?.lazy()) // To avoid nested lazyframe
 }
 
 // Map mortality assumption
@@ -39,7 +43,7 @@ fn _map_mort_assumption(
         .left_join(mort_lf, col("age"), col("age"))
         .with_column(col("mort_rate").fill_null(lit(0.0)).alias("mort_rate"));
 
-    Ok(result)
+    Ok(result.collect()?.lazy()) // To avoid nested lazyframe
 }
 
 // Map lapse, Inflation, Expenses and Spot rate assumption
@@ -56,7 +60,7 @@ fn _map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<L
         .left_join(lookup_lf, col("duration"), col("duration"))
         .with_column(col(col_name).fill_null(lit(0.0)).alias(col_name)); // Fill null with 0.0
 
-    Ok(result)
+    Ok(result.collect()?.lazy()) // To avoid nested lazyframe
 }
 
 // Discount factor from spot rate
@@ -72,7 +76,7 @@ fn _discount_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
                 .alias("discount_factor"),
         );
 
-    Ok(result)
+    Ok(result.collect()?.lazy())
 }
 
 // Expense per policy
@@ -91,7 +95,7 @@ fn _exp_pp(lf: LazyFrame) -> PolarsResult<LazyFrame> {
             (col("real_exp_pp") * col("inf_factor")).alias("exp_pp"),
         );
 
-    Ok(lf)
+    Ok(lf.collect()?.lazy()) // To avoid nested lazyframe
 }
 
 // Count policy inforce and decrements
@@ -156,7 +160,7 @@ fn _policies_count(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult<
         ])?
         .lazy();
 
-    Ok(result)
+    Ok(result.collect()?.lazy()) // To avoid nested lazyframe
 }
 
 // Net premium calculation - do not consume dataframe
@@ -236,7 +240,7 @@ fn _complete_projection(lf: LazyFrame, sum_insured: f64) -> PolarsResult<LazyFra
                 .alias("net_cf"),
         );
 
-    Ok(lf)
+    Ok(lf.collect()?.lazy()) // To avoid nested lazyframe
 }
 
 fn project_single_model_point(
@@ -265,6 +269,11 @@ fn project_single_model_point(
 //---------------------------------------------------------------------------------------------------------
 // PUBLIC
 //---------------------------------------------------------------------------------------------------------
+/*
+Using the below command to run the code in parallel with limited threads finish run in 90s vs 400s in non parallel mode
+The test is not exhaustive, but it shows that parallel processing can significantly speed up the projection of model points.
+$env:RAYON_NUM_THREADS = 8; $env:RUST_MIN_STACK = 33554432; cargo run
+*/
 pub fn project_model_points(
     model_points_df: &DataFrame,
     assumptions: &AssumptionSet,
@@ -272,17 +281,57 @@ pub fn project_model_points(
     // Convert model points DataFrame to vector
     let model_points_vec = convert_model_points_df_to_vector(model_points_df)?;
 
-    // Define all_dfs with capacity
-    let mut all_lfs: Vec<LazyFrame> = Vec::with_capacity(model_points_vec.len());
-
-    // Process model points sequentially
-    for mp in model_points_vec {
-        let df = project_single_model_point(&mp, assumptions)?;
-        all_lfs.push(df.lazy());
+    let mut lfs = Vec::new();
+    for mp in &model_points_vec {
+        let df = project_single_model_point(mp, assumptions)?;
+        lfs.push(df.lazy());
     }
 
-    // Concatenate all DataFrames
-    let final_df = concat(all_lfs, Default::default())?.collect()?;
+    // Concatenate all LazyFrames and collect to DataFrame
+    let lf = concat(lfs, Default::default())?;
+    let final_df = lf.collect()?;
+
+    Ok(final_df)
+}
+
+pub fn project_model_points_parallel(
+    model_points_df: &DataFrame,
+    assumptions: &AssumptionSet,
+) -> PolarsResult<DataFrame> {
+    // Convert model points DataFrame to vector
+    let model_points_vec = convert_model_points_df_to_vector(model_points_df)?;
+
+    // Process chunks of model points in parallel with limited threads
+    let chunks: Vec<&[ModelPoint]> = model_points_vec.chunks(CHUNK_SIZE).collect();
+
+    let chunk_dfs: PolarsResult<Vec<DataFrame>> = chunks
+        .into_par_iter()
+        .map(|chunk| {
+            // Process each chunk sequentially (no nested parallelism)
+            let mut lfs = Vec::new();
+            for mp in chunk {
+                let df = project_single_model_point(mp, assumptions)?;
+                lfs.push(df.lazy());
+            }
+
+            // Concatenate LazyFrames within the chunk and collect to DataFrame
+            let lf = concat(lfs, Default::default())?;
+            lf.collect()
+        })
+        .collect();
+
+    // Unwrap the result or return the error
+    let chunk_dfs = chunk_dfs?;
+
+    // Concatenate all chunk DataFrames
+    let final_df = concat(
+        chunk_dfs
+            .into_iter()
+            .map(|df| df.lazy())
+            .collect::<Vec<_>>(),
+        Default::default(),
+    )?
+    .collect()?;
 
     Ok(final_df)
 }
