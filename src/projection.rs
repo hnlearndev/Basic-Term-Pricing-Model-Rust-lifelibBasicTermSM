@@ -13,10 +13,14 @@ const CHUNK_SIZE: usize = 100;
 // PRIVATE
 //---------------------------------------------------------------------------------------------------------
 // Initialize projection lazyframe
-fn _initialize_lf(id: i32, term: i32, entry_age: i32) -> PolarsResult<LazyFrame> {
+fn _initialize_lf(id: i32, term: i32, entry_age: i32, sum_insured: f64) -> PolarsResult<LazyFrame> {
+    let length = (term * 12 + 1) as usize; // Total months in the term
+
     let lf = df![
-        "id" => vec![id; (term * 12 + 1) as usize],
-        "t" => (0..= (term * 12) as i32).collect::<Vec<i32>>(),
+        "id" => vec![id; length],
+        "term" => vec![term; length],
+        "sum_insured" => vec![sum_insured; length],
+        "t" => (0..= (length -1) as i32).collect::<Vec<i32>>(),
     ]
     .unwrap()
     .lazy()
@@ -248,7 +252,7 @@ fn project_single_model_point(
     assumptions: &AssumptionSet,
 ) -> PolarsResult<DataFrame> {
     // Initialize projection dataframe - using all interger values
-    let lf = _initialize_lf(mp.id, mp.term, mp.entry_age)?;
+    let lf = _initialize_lf(mp.id, mp.term, mp.entry_age, mp.sum_insured)?;
     // Map assumptions
     let lf = _map_mort_assumption(lf, &assumptions.mort, &mp.gender)?; // Mortality assumption based on gender
     let lf = _map_other_assumption(lf, &assumptions.lapse)?; // Lapse assumption
