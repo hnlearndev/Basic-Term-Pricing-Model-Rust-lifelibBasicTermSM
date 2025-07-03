@@ -5,7 +5,7 @@
 Some notes:
 
 - The main reference is [Basic term S](https://lifelib.io/libraries/basiclife/BasicTerm_S.html). Model S, M and SC are basically the same.
-- term_sm.ipynb Jupyter Notebook is only for reference, not an actual implementation. There is a limitation with Rust Kernel in Jupyter lab that lazyframe technology cannot work properly for qquerying.
+- term_sm.ipynb Jupyter Notebook is only for reference, not an actual implementation. There is a limitation with Rust Kernel in Jupyter lab that lazyframe technology cannot work properly for querying.
 
 What can be taken out from this repo?
 
@@ -24,7 +24,7 @@ Install [Rust](https://www.rust-lang.org/)
 - Clone the repo:
 
 ```shell
-git clone https://github.com/hnlearndev/Universal-Life-Investment-Link-Cashflow-Illustration-Rust
+git clone https://github.com/hnlearndev/Basic-Term-Pricing-Model-Rust-lifelibBasicTermSM
 ```
 
 ### Usage

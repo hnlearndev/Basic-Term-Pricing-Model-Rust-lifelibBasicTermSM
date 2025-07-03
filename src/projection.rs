@@ -4,9 +4,6 @@ use ndarray::prelude::*;
 use polars::prelude::*;
 use rayon::prelude::*;
 
-// Process data in chunks to avoid stack overflow
-const CHUNK_SIZE: usize = 100;
-
 //---------------------------------------------------------------------------------------------------------
 // STRUCTS
 //---------------------------------------------------------------------------------------------------------
@@ -330,12 +327,6 @@ fn _project_single_model_point(
 // PUBLIC
 //---------------------------------------------------------------------------------------------------------
 
-/*
-Using the below command to run the code in parallel with limited threads finish run in 90s vs 400s in non parallel mode
-The test is not exhaustive, but it shows that parallel processing can significantly speed up the projection of model points.
-$env:RAYON_NUM_THREADS = 8; $env:RUST_MIN_STACK = 33554432; cargo run
-*/
-
 //----------------------------------------
 // Non-parallel version of the projection
 //----------------------------------------
@@ -381,6 +372,16 @@ pub fn project_multiple_run(run_setups: &Vec<RunSetup>) -> PolarsResult<Multiple
 //----------------------------------------
 // Parallel version of the projection
 //----------------------------------------
+
+/*
+Using the below command to run the code in parallel with limited threads finish run in 90s vs 400s in non parallel mode
+The test is not exhaustive, but it shows that parallel processing can significantly speed up the projection of model points.
+$env:RAYON_NUM_THREADS = 8; $env:RUST_MIN_STACK = 33554432; cargo run
+*/
+
+// Process data in chunks to avoid stack overflow
+const CHUNK_SIZE: usize = 100;
+
 pub fn project_single_run_parallel(run_setup: &RunSetup) -> PolarsResult<RunResult> {
     // Convert model points DataFrame to vector
     let model_points_vec = convert_model_points_df_to_vector(&run_setup.model_points_df)?;
