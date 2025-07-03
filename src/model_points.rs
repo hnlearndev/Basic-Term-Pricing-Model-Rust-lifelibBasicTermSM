@@ -5,9 +5,9 @@ use ndarray_rand::rand::rngs::StdRng;
 use ndarray_rand::rand_distr::Uniform;
 use polars::prelude::*;
 
-// These functions should be placed in the same module (eg: assumptions.rs)
-// NOTE: DO NOT MODIFY THIS
-
+//---------------------------------------------------------------------------------------------------------
+// STRUCTS
+//---------------------------------------------------------------------------------------------------------
 pub struct ModelPoint {
     pub id: i32,
     pub entry_age: i32,

@@ -1,8 +1,20 @@
-// These functions should be placed in the same module (eg: assumptions.rs)
-// NOTE: DO NOT MODIFY THIS
-
 use polars::prelude::*;
 use std::path::PathBuf;
+
+//---------------------------------------------------------------------------------------------------------
+// STRUCTS
+//---------------------------------------------------------------------------------------------------------
+#[derive(Debug, Clone)]
+pub struct AssumptionSet {
+    pub mort: DataFrame,
+    pub lapse: DataFrame,
+    pub inf: DataFrame,
+    pub acq: DataFrame,
+    pub mtn: DataFrame,
+    pub spot: DataFrame,
+    pub load: DataFrame,
+}
+
 //---------------------------------------------------------------------------------------------------------
 // PRIVATE
 //---------------------------------------------------------------------------------------------------------
@@ -24,17 +36,6 @@ fn _get_assumption_df(
 //---------------------------------------------------------------------------------------------------------
 // PUBLIC
 //---------------------------------------------------------------------------------------------------------
-#[derive(Debug, Clone)]
-pub struct AssumptionSet {
-    pub mort: DataFrame,
-    pub lapse: DataFrame,
-    pub inf: DataFrame,
-    pub acq: DataFrame,
-    pub mtn: DataFrame,
-    pub spot: DataFrame,
-    pub load: DataFrame,
-}
-
 // Lapse assumption
 pub fn get_lapse_df(lapse_type: &str) -> PolarsResult<DataFrame> {
     _get_assumption_df("src/assumptions/lapse.csv", lapse_type, "lapse_rate")

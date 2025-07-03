@@ -1,5 +1,3 @@
-// These functions should be placed in the same module (eg: projection.rs)
-// NOTE: DO NOT MODIFY THIS
 use crate::assumptions::AssumptionSet;
 use crate::model_points::{ModelPoint, convert_model_points_df_to_vector};
 use ndarray::prelude::*;
@@ -10,10 +8,57 @@ use rayon::prelude::*;
 const CHUNK_SIZE: usize = 100;
 
 //---------------------------------------------------------------------------------------------------------
+// STRUCTS
+//---------------------------------------------------------------------------------------------------------
+#[derive(Clone, Debug)]
+pub struct RunSetup {
+    pub description: String, // Optional description for the run
+    pub model_points_df: DataFrame,
+    pub assumptions: AssumptionSet,
+}
+
+#[derive(Clone, Debug)]
+pub struct RunResult {
+    pub run_setup: RunSetup,
+    pub projected_df: DataFrame,
+}
+
+#[derive(Clone, Debug)]
+pub struct MultipleRunResult {
+    pub run_setups: Vec<RunSetup>,
+    pub run_results: Vec<RunResult>,
+}
+
+impl MultipleRunResult {
+    pub fn aggregate_projected_df(&self) -> PolarsResult<DataFrame> {
+        let mut lfs: Vec<LazyFrame> = Vec::with_capacity(self.run_results.len());
+
+        for (i, run_result) in self.run_results.iter().enumerate() {
+            let run_id = i as i32;
+            let run_description = run_result.run_setup.description.clone();
+
+            let lf = run_result.projected_df.clone().lazy().with_columns(vec![
+                lit(run_id).alias("run_id"),
+                lit(run_description).alias("run_description"),
+            ]);
+            lfs.push(lf);
+        }
+
+        let lf = concat(lfs, Default::default())?;
+        lf.collect()
+    }
+}
+
+//---------------------------------------------------------------------------------------------------------
 // PRIVATE
 //---------------------------------------------------------------------------------------------------------
 // Initialize projection lazyframe
-fn _initialize_lf(id: i32, term: i32, entry_age: i32, sum_insured: f64) -> PolarsResult<LazyFrame> {
+fn __initialize_lf(
+    id: i32,
+    term: i32,
+    entry_age: i32,
+    sum_insured: f64,
+) -> PolarsResult<LazyFrame> {
     let length = (term * 12 + 1) as usize; // Total months in the term
 
     let lf = df![
@@ -31,17 +76,28 @@ fn _initialize_lf(id: i32, term: i32, entry_age: i32, sum_insured: f64) -> Polar
 }
 
 // Map mortality assumption
-fn _map_mort_assumption(
+fn __map_mort_assumption(
     lf: LazyFrame,
     mort_df: &DataFrame,
     gender: &str,
 ) -> PolarsResult<LazyFrame> {
-    let mort_col_name = format!("cso80_{}", gender.to_lowercase());
+    // Find the column name according to gender
+    let suffix = format!("_{}", gender.to_lowercase());
+    let mort_col_name = mort_df
+        .get_column_names()
+        .iter()
+        .find(|&col| col.ends_with(&suffix))
+        .ok_or_else(|| {
+            polars::prelude::PolarsError::ComputeError(
+                format!("Mortality column with suffix '{}' not found", suffix).into(),
+            )
+        })?
+        .as_str();
 
     let mort_lf = mort_df
         .clone()
         .lazy()
-        .select([col("age"), col(&mort_col_name).alias("mort_rate")]);
+        .select([col("age"), col(mort_col_name).alias("mort_rate")]);
 
     let result = lf
         .left_join(mort_lf, col("age"), col("age"))
@@ -51,7 +107,7 @@ fn _map_mort_assumption(
 }
 
 // Map lapse, Inflation, Expenses and Spot rate assumption
-fn _map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<LazyFrame> {
+fn __map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<LazyFrame> {
     let col_name = lookup_df.get_column_names()[1].as_str();
 
     let lookup_lf = lookup_df
@@ -68,7 +124,7 @@ fn _map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<L
 }
 
 // Discount factor from spot rate
-fn _discount_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
+fn __discount_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let result = lf
         .with_column(
             // Spot rate monthly
@@ -84,7 +140,7 @@ fn _discount_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
 }
 
 // Expense per policy
-fn _exp_pp(lf: LazyFrame) -> PolarsResult<LazyFrame> {
+fn __exp_pp(lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let lf = lf
         .with_columns(vec![
             // Total real expense per policy
@@ -103,7 +159,7 @@ fn _exp_pp(lf: LazyFrame) -> PolarsResult<LazyFrame> {
 }
 
 // Count policy inforce and decrements
-fn _policies_count(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult<LazyFrame> {
+fn __policies_count(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult<LazyFrame> {
     let lf = lf.with_columns(vec![
         // Monthly decrement rate
         (lit(1.0) - (lit(1.0) - col("mort_rate")).pow(1.0 / 12.0)).alias("mort_rate_mth"),
@@ -168,7 +224,7 @@ fn _policies_count(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult<
 }
 
 // Net premium calculation - do not consume dataframe
-fn __calculate_net_premium(lf: LazyFrame, sum_insured: f64) -> PolarsResult<f64> {
+fn ___calculate_net_premium(lf: LazyFrame, sum_insured: f64) -> PolarsResult<f64> {
     // Calculate both PV claims and premium annuities in a single operation
     let result = lf
         .with_columns(vec![
@@ -212,9 +268,9 @@ fn __calculate_net_premium(lf: LazyFrame, sum_insured: f64) -> PolarsResult<f64>
 }
 
 // Complete projection
-fn _complete_projection(lf: LazyFrame, sum_insured: f64) -> PolarsResult<LazyFrame> {
+fn __complete_projection(lf: LazyFrame, sum_insured: f64) -> PolarsResult<LazyFrame> {
     // Calculate net premium
-    let net_prem = __calculate_net_premium(lf.clone(), sum_insured)?;
+    let net_prem = ___calculate_net_premium(lf.clone(), sum_insured)?;
 
     // Add net premium to the lazyframe
     let lf = lf
@@ -247,25 +303,25 @@ fn _complete_projection(lf: LazyFrame, sum_insured: f64) -> PolarsResult<LazyFra
     Ok(lf.collect()?.lazy()) // To avoid nested lazyframe
 }
 
-fn project_single_model_point(
+fn _project_single_model_point(
     mp: &ModelPoint,
     assumptions: &AssumptionSet,
 ) -> PolarsResult<DataFrame> {
     // Initialize projection dataframe - using all interger values
-    let lf = _initialize_lf(mp.id, mp.term, mp.entry_age, mp.sum_insured)?;
+    let lf = __initialize_lf(mp.id, mp.term, mp.entry_age, mp.sum_insured)?;
     // Map assumptions
-    let lf = _map_mort_assumption(lf, &assumptions.mort, &mp.gender)?; // Mortality assumption based on gender
-    let lf = _map_other_assumption(lf, &assumptions.lapse)?; // Lapse assumption
-    let lf = _map_other_assumption(lf, &assumptions.acq)?; // Acquisition expenses
-    let lf = _map_other_assumption(lf, &assumptions.mtn)?; // Maintenance expenses
-    let lf = _map_other_assumption(lf, &assumptions.inf)?; // Inflation assumption
-    let lf = _map_other_assumption(lf, &assumptions.spot)?; // Spot rate assumption
-    let lf = _map_other_assumption(lf, &assumptions.load)?; // Load rate assumption
+    let lf = __map_mort_assumption(lf, &assumptions.mort, &mp.gender)?; // Mortality assumption based on gender
+    let lf = __map_other_assumption(lf, &assumptions.lapse)?; // Lapse assumption
+    let lf = __map_other_assumption(lf, &assumptions.acq)?; // Acquisition expenses
+    let lf = __map_other_assumption(lf, &assumptions.mtn)?; // Maintenance expenses
+    let lf = __map_other_assumption(lf, &assumptions.inf)?; // Inflation assumption
+    let lf = __map_other_assumption(lf, &assumptions.spot)?; // Spot rate assumption
+    let lf = __map_other_assumption(lf, &assumptions.load)?; // Load rate assumption
     // Perform projection
-    let lf = _discount_factor(lf)?;
-    let lf = _exp_pp(lf)?;
-    let lf = _policies_count(lf, mp.policy_count, mp.term)?;
-    let lf = _complete_projection(lf, mp.sum_insured)?;
+    let lf = __discount_factor(lf)?;
+    let lf = __exp_pp(lf)?;
+    let lf = __policies_count(lf, mp.policy_count, mp.term)?;
+    let lf = __complete_projection(lf, mp.sum_insured)?;
 
     Ok(lf.collect()?)
 }
@@ -273,21 +329,24 @@ fn project_single_model_point(
 //---------------------------------------------------------------------------------------------------------
 // PUBLIC
 //---------------------------------------------------------------------------------------------------------
+
 /*
 Using the below command to run the code in parallel with limited threads finish run in 90s vs 400s in non parallel mode
 The test is not exhaustive, but it shows that parallel processing can significantly speed up the projection of model points.
 $env:RAYON_NUM_THREADS = 8; $env:RUST_MIN_STACK = 33554432; cargo run
 */
-pub fn project_model_points(
-    model_points_df: &DataFrame,
-    assumptions: &AssumptionSet,
-) -> PolarsResult<DataFrame> {
-    // Convert model points DataFrame to vector
-    let model_points_vec = convert_model_points_df_to_vector(model_points_df)?;
 
-    let mut lfs = Vec::new();
+//----------------------------------------
+// Non-parallel version of the projection
+//----------------------------------------
+pub fn project_single_run(run_setup: &RunSetup) -> PolarsResult<RunResult> {
+    // Convert model points DataFrame to vector
+    let model_points_vec = convert_model_points_df_to_vector(&run_setup.model_points_df)?;
+
+    let mut lfs = Vec::with_capacity(model_points_vec.len());
+
     for mp in &model_points_vec {
-        let df = project_single_model_point(mp, assumptions)?;
+        let df = _project_single_model_point(mp, &run_setup.assumptions)?;
         lfs.push(df.lazy());
     }
 
@@ -295,15 +354,36 @@ pub fn project_model_points(
     let lf = concat(lfs, Default::default())?;
     let final_df = lf.collect()?;
 
-    Ok(final_df)
+    // Return the result with run setup and projected DataFrame
+    let result = RunResult {
+        run_setup: run_setup.clone(),
+        projected_df: final_df,
+    };
+
+    Ok(result)
 }
 
-pub fn project_model_points_parallel(
-    model_points_df: &DataFrame,
-    assumptions: &AssumptionSet,
-) -> PolarsResult<DataFrame> {
+pub fn project_multiple_run(run_setups: &Vec<RunSetup>) -> PolarsResult<MultipleRunResult> {
+    let mut results: Vec<RunResult> = Vec::with_capacity(run_setups.len()); // To collect run results
+
+    for i in 0..run_setups.len() {
+        let setup = run_setups.get(i).unwrap();
+        let result = project_single_run(setup)?;
+        results.push(result);
+    }
+
+    Ok(MultipleRunResult {
+        run_setups: run_setups.clone(),
+        run_results: results,
+    })
+}
+
+//----------------------------------------
+// Parallel version of the projection
+//----------------------------------------
+pub fn project_single_run_parallel(run_setup: &RunSetup) -> PolarsResult<RunResult> {
     // Convert model points DataFrame to vector
-    let model_points_vec = convert_model_points_df_to_vector(model_points_df)?;
+    let model_points_vec = convert_model_points_df_to_vector(&run_setup.model_points_df)?;
 
     // Process chunks of model points in parallel with limited threads
     let chunks: Vec<&[ModelPoint]> = model_points_vec.chunks(CHUNK_SIZE).collect();
@@ -314,7 +394,7 @@ pub fn project_model_points_parallel(
             // Process each chunk sequentially (no nested parallelism)
             let mut lfs = Vec::new();
             for mp in chunk {
-                let df = project_single_model_point(mp, assumptions)?;
+                let df = _project_single_model_point(mp, &run_setup.assumptions)?;
                 lfs.push(df.lazy());
             }
 
@@ -337,5 +417,42 @@ pub fn project_model_points_parallel(
     )?
     .collect()?;
 
-    Ok(final_df)
+    // Return the result with run setup and projected DataFrame
+    let result = RunResult {
+        run_setup: run_setup.clone(),
+        projected_df: final_df,
+    };
+
+    Ok(result)
+}
+
+pub fn project_multiple_run_parallel(
+    run_setups: &Vec<RunSetup>,
+) -> PolarsResult<MultipleRunResult> {
+    let mut results: Vec<RunResult> = Vec::with_capacity(run_setups.len()); // To collect run results
+
+    for i in 0..run_setups.len() {
+        let setup = run_setups.get(i).unwrap();
+        let result = project_single_run_parallel(setup)?;
+        results.push(result);
+    }
+
+    Ok(MultipleRunResult {
+        run_setups: run_setups.clone(),
+        run_results: results,
+    })
+}
+
+pub fn project_multiple_run_parallel_x2(
+    run_setups: &Vec<RunSetup>,
+) -> PolarsResult<MultipleRunResult> {
+    let results: Vec<RunResult> = run_setups
+        .par_iter()
+        .map(|setup| project_single_run_parallel(setup))
+        .collect::<PolarsResult<Vec<_>>>()?;
+
+    Ok(MultipleRunResult {
+        run_setups: run_setups.clone(),
+        run_results: results,
+    })
 }
