@@ -9,3 +9,4 @@ polars = { version = "0.49.1", features = ["describe", "lazy", "ndarray"] }
 plotters = { version = "0.3.5", features = ["evcxr", "all_series", "all_elements"] }
 ndarray-rand = { version = "0.15.0" }
 rayon = "1.10.0"
+spreadsheet-ods = "0.25.0"

@@ -28,20 +28,21 @@ pub struct MultipleRunResult {
 
 impl MultipleRunResult {
     pub fn aggregate_projected_df(&self) -> PolarsResult<DataFrame> {
-        let mut lfs: Vec<LazyFrame> = Vec::with_capacity(self.run_results.len());
+        let mut all_lfs: Vec<LazyFrame> = Vec::with_capacity(self.run_results.len());
 
         for (i, run_result) in self.run_results.iter().enumerate() {
-            let run_id = i as i32;
             let run_description = run_result.run_setup.description.clone();
 
             let lf = run_result.projected_df.clone().lazy().with_columns(vec![
-                lit(run_id).alias("run_id"),
+                lit(i as i32).alias("run_id"),
                 lit(run_description).alias("run_description"),
             ]);
-            lfs.push(lf);
+
+            all_lfs.push(lf);
         }
 
-        let lf = concat(lfs, Default::default())?;
+        let lf = concat(all_lfs, Default::default())?;
+
         lf.collect()
     }
 }
@@ -62,6 +63,7 @@ fn __initialize_lf(
         "id" => vec![id; length],
         "term" => vec![term; length],
         "sum_insured" => vec![sum_insured; length],
+        "claim_pp" => vec![sum_insured; length], // Claim per policy is the sum insured
         "t" => (0..= (length -1) as i32).collect::<Vec<i32>>(),
     ]
     .unwrap()
@@ -72,8 +74,11 @@ fn __initialize_lf(
     Ok(lf.collect()?.lazy()) // To avoid nested lazyframe
 }
 
+// ---------------------
+// Map assumptions
+// ---------------------
 // Map mortality assumption
-fn __map_mort_assumption(
+fn ___map_mort_assumption(
     lf: LazyFrame,
     mort_df: &DataFrame,
     gender: &str,
@@ -104,7 +109,7 @@ fn __map_mort_assumption(
 }
 
 // Map lapse, Inflation, Expenses and Spot rate assumption
-fn __map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<LazyFrame> {
+fn ___map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<LazyFrame> {
     let col_name = lookup_df.get_column_names()[1].as_str();
 
     let lookup_lf = lookup_df
@@ -120,7 +125,28 @@ fn __map_other_assumption(lf: LazyFrame, lookup_df: &DataFrame) -> PolarsResult<
     Ok(result.collect()?.lazy()) // To avoid nested lazyframe
 }
 
-// Discount factor from spot rate
+fn __map_assumptions(
+    lf: LazyFrame,
+    assumptions: &AssumptionSet,
+    gender: &str,
+) -> PolarsResult<LazyFrame> {
+    // Map mortality assumption based
+    let lf = ___map_mort_assumption(lf, &assumptions.mort, gender)?;
+
+    // Map other assumptions by iterating over each field of the AssumptionSet struct
+    let lf = ___map_other_assumption(lf, &assumptions.lapse)?;
+    let lf = ___map_other_assumption(lf, &assumptions.acq)?;
+    let lf = ___map_other_assumption(lf, &assumptions.mtn)?;
+    let lf = ___map_other_assumption(lf, &assumptions.inf)?;
+    let lf = ___map_other_assumption(lf, &assumptions.spot)?;
+    let lf = ___map_other_assumption(lf, &assumptions.load)?;
+
+    Ok(lf)
+}
+
+// ---------------------
+// Discount factor
+// ---------------------
 fn __discount_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let result = lf
         .with_column(
@@ -134,6 +160,20 @@ fn __discount_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
         );
 
     Ok(result.collect()?.lazy())
+}
+
+// ---------------------
+// Inflation factor
+// ---------------------
+fn __inflation_factor(lf: LazyFrame) -> PolarsResult<LazyFrame> {
+    let lf = lf.with_column(
+        // Inflation factor - for flat curve only
+        (lit(1.0) + col("inf_rate"))
+            .pow(col("t").cast(DataType::Float64) / lit(12.0))
+            .alias("inf_factor"),
+    );
+
+    Ok(lf.collect()?.lazy())
 }
 
 // Expense per policy
@@ -155,8 +195,10 @@ fn __exp_pp(lf: LazyFrame) -> PolarsResult<LazyFrame> {
     Ok(lf.collect()?.lazy()) // To avoid nested lazyframe
 }
 
-// Count policy inforce and decrements
-fn __policies_count(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult<LazyFrame> {
+// ---------------------
+// Policy movement
+// ---------------------
+fn __policies_movement(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult<LazyFrame> {
     let lf = lf.with_columns(vec![
         // Monthly decrement rate
         (lit(1.0) - (lit(1.0) - col("mort_rate")).pow(1.0 / 12.0)).alias("mort_rate_mth"),
@@ -220,16 +262,16 @@ fn __policies_count(lf: LazyFrame, policy_count: f64, term: i32) -> PolarsResult
     Ok(result.collect()?.lazy()) // To avoid nested lazyframe
 }
 
-// Net premium calculation - do not consume dataframe
-fn ___calculate_net_premium(lf: LazyFrame, sum_insured: f64) -> PolarsResult<f64> {
+// ---------------------
+// Complete projection
+// ---------------------
+fn ___calculate_net_premium(lf: LazyFrame) -> PolarsResult<f64> {
     // Calculate both PV claims and premium annuities in a single operation
     let result = lf
-        .with_columns(vec![
-            // Claim per policy
-            lit(sum_insured).alias("claim_pp"),
+        .with_column(
             // Portfolio claims
-            (lit(sum_insured) * col("pols_death")).alias("claims"),
-        ])
+            (col("claim_pp") * col("pols_death")).alias("claims"),
+        )
         .with_columns(vec![
             // PV of claims and PV of premium annuities
             (col("claims") * col("discount_factor")).alias("pv_claims_component"),
@@ -265,15 +307,13 @@ fn ___calculate_net_premium(lf: LazyFrame, sum_insured: f64) -> PolarsResult<f64
 }
 
 // Complete projection
-fn __complete_projection(lf: LazyFrame, sum_insured: f64) -> PolarsResult<LazyFrame> {
+fn __complete_projection(lf: LazyFrame) -> PolarsResult<LazyFrame> {
     // Calculate net premium
-    let net_prem = ___calculate_net_premium(lf.clone(), sum_insured)?;
+    let net_prem = ___calculate_net_premium(lf.clone())?;
 
     // Add net premium to the lazyframe
     let lf = lf
         .with_columns(vec![
-            // Claim per policy
-            lit(sum_insured).alias("claim_pp"),
             // Loaded premium and round to 2 decimal places
             ((lit(1.0) + col("load_rate")) * lit(net_prem)).alias("prem_pp"),
             // Portfolio expense
@@ -306,19 +346,15 @@ fn _project_single_model_point(
 ) -> PolarsResult<DataFrame> {
     // Initialize projection dataframe - using all interger values
     let lf = __initialize_lf(mp.id, mp.term, mp.entry_age, mp.sum_insured)?;
+
     // Map assumptions
-    let lf = __map_mort_assumption(lf, &assumptions.mort, &mp.gender)?; // Mortality assumption based on gender
-    let lf = __map_other_assumption(lf, &assumptions.lapse)?; // Lapse assumption
-    let lf = __map_other_assumption(lf, &assumptions.acq)?; // Acquisition expenses
-    let lf = __map_other_assumption(lf, &assumptions.mtn)?; // Maintenance expenses
-    let lf = __map_other_assumption(lf, &assumptions.inf)?; // Inflation assumption
-    let lf = __map_other_assumption(lf, &assumptions.spot)?; // Spot rate assumption
-    let lf = __map_other_assumption(lf, &assumptions.load)?; // Load rate assumption
+    let lf = __map_assumptions(lf, assumptions, &mp.gender)?;
+
     // Perform projection
     let lf = __discount_factor(lf)?;
     let lf = __exp_pp(lf)?;
-    let lf = __policies_count(lf, mp.policy_count, mp.term)?;
-    let lf = __complete_projection(lf, mp.sum_insured)?;
+    let lf = __policies_movement(lf, mp.policy_count, mp.term)?;
+    let lf = __complete_projection(lf)?;
 
     Ok(lf.collect()?)
 }
@@ -336,7 +372,7 @@ pub fn project_single_run(run_setup: &RunSetup) -> PolarsResult<RunResult> {
 
     let mut lfs = Vec::with_capacity(model_points_vec.len());
 
-    for mp in &model_points_vec {
+    for (_, mp) in model_points_vec.iter().enumerate() {
         let df = _project_single_model_point(mp, &run_setup.assumptions)?;
         lfs.push(df.lazy());
     }
@@ -355,18 +391,19 @@ pub fn project_single_run(run_setup: &RunSetup) -> PolarsResult<RunResult> {
 }
 
 pub fn project_multiple_run(run_setups: &Vec<RunSetup>) -> PolarsResult<MultipleRunResult> {
-    let mut results: Vec<RunResult> = Vec::with_capacity(run_setups.len()); // To collect run results
+    let mut run_results: Vec<RunResult> = Vec::with_capacity(run_setups.len()); // To collect run results
 
-    for i in 0..run_setups.len() {
-        let setup = run_setups.get(i).unwrap();
-        let result = project_single_run(setup)?;
-        results.push(result);
+    for (_, setup) in run_setups.iter().enumerate() {
+        let single_run_result = project_single_run(setup)?;
+        run_results.push(single_run_result);
     }
 
-    Ok(MultipleRunResult {
+    let result = MultipleRunResult {
         run_setups: run_setups.clone(),
-        run_results: results,
-    })
+        run_results: run_results,
+    };
+
+    Ok(result)
 }
 
 //----------------------------------------
@@ -430,30 +467,41 @@ pub fn project_single_run_parallel(run_setup: &RunSetup) -> PolarsResult<RunResu
 pub fn project_multiple_run_parallel(
     run_setups: &Vec<RunSetup>,
 ) -> PolarsResult<MultipleRunResult> {
-    let mut results: Vec<RunResult> = Vec::with_capacity(run_setups.len()); // To collect run results
+    let mut run_results: Vec<RunResult> = Vec::with_capacity(run_setups.len()); // To collect run results
 
-    for i in 0..run_setups.len() {
-        let setup = run_setups.get(i).unwrap();
-        let result = project_single_run_parallel(setup)?;
-        results.push(result);
+    for (_, setup) in run_setups.iter().enumerate() {
+        let single_run_result = project_single_run_parallel(setup)?;
+        run_results.push(single_run_result);
     }
 
-    Ok(MultipleRunResult {
+    let result = MultipleRunResult {
         run_setups: run_setups.clone(),
-        run_results: results,
-    })
+        run_results: run_results,
+    };
+
+    Ok(result)
 }
 
 pub fn project_multiple_run_parallel_x2(
     run_setups: &Vec<RunSetup>,
 ) -> PolarsResult<MultipleRunResult> {
-    let results: Vec<RunResult> = run_setups
+    let run_results = run_setups
         .par_iter()
         .map(|setup| project_single_run_parallel(setup))
-        .collect::<PolarsResult<Vec<_>>>()?;
+        .collect::<PolarsResult<Vec<RunResult>>>()?;
 
-    Ok(MultipleRunResult {
+    let result = MultipleRunResult {
         run_setups: run_setups.clone(),
-        run_results: results,
-    })
+        run_results: run_results,
+    };
+
+    Ok(result)
 }
+
+//----------------------------------------
+// Export results
+//----------------------------------------
+
+//----------------------------------------
+// Import result results
+//----------------------------------------
